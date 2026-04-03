@@ -220,7 +220,7 @@ def train_with_config(args, opts):
     # Initialize wandb
     if opts.use_wandb:
         # Generate run name if not provided
-        current_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        current_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         wandb_run_name = f"MotionBERT_pretrain_{current_timestamp}"
         project_name = "MotionBERT_pretrain"
         wandb_run = wandb.init(
