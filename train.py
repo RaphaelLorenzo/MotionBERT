@@ -4,7 +4,6 @@ import argparse
 import errno
 import math
 import pickle
-import tensorboardX
 from tqdm import tqdm
 from time import time
 import copy
@@ -16,6 +15,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
+
+import wandb
+import datetime
 
 from lib.utils.tools import *
 from lib.utils.learning import *
@@ -29,6 +31,7 @@ from lib.model.loss import *
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/pretrain.yaml", help="Path to the config file.")
+    parser.add_argument('--use_wandb', "-wandb", default=False, action='store_true', help='use wandb for logging')
     parser.add_argument('-c', '--checkpoint', default='checkpoint', type=str, metavar='PATH', help='checkpoint directory')
     parser.add_argument('-p', '--pretrained', default='checkpoint', type=str, metavar='PATH', help='pretrained checkpoint directory')
     parser.add_argument('-r', '--resume', default='', type=str, metavar='FILENAME', help='checkpoint to resume (file name)')
@@ -58,7 +61,7 @@ def evaluate(args, model_pos, test_loader, datareader):
     results_all = []
     model_pos.eval()            
     with torch.no_grad():
-        for batch_input, batch_gt in tqdm(test_loader):
+        for batch_input, batch_gt in tqdm(test_loader, total=len(test_loader), desc='Testing'):
             N, T = batch_gt.shape[:2]
             if torch.cuda.is_available():
                 batch_input = batch_input.cuda()
@@ -154,7 +157,7 @@ def evaluate(args, model_pos, test_loader, datareader):
         
 def train_epoch(args, model_pos, train_loader, losses, optimizer, has_3d, has_gt):
     model_pos.train()
-    for idx, (batch_input, batch_gt) in tqdm(enumerate(train_loader)):    
+    for idx, (batch_input, batch_gt) in tqdm(enumerate(train_loader), total=len(train_loader), desc='Training'):    
         batch_size = len(batch_input)        
         if torch.cuda.is_available():
             batch_input = batch_input.cuda()
@@ -212,8 +215,24 @@ def train_with_config(args, opts):
     except OSError as e:
         if e.errno != errno.EEXIST:
             raise RuntimeError('Unable to create checkpoint directory:', opts.checkpoint)
-    train_writer = tensorboardX.SummaryWriter(os.path.join(opts.checkpoint, "logs"))
+        
 
+    # Initialize wandb
+    if opts.use_wandb:
+        # Generate run name if not provided
+        current_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        wandb_run_name = f"MotionBERT_pretrain_{current_timestamp}"
+        project_name = "MotionBERT_pretrain"
+        wandb_run = wandb.init(
+            project=project_name,
+            name=wandb_run_name,
+            config={
+                **args,
+            }
+        )
+        print(f"Wandb initialized !")
+    else:
+        wandb_run = None
 
     print('Loading dataset...')
     trainloader_params = {
@@ -235,7 +254,9 @@ def train_with_config(args, opts):
     }
 
     train_dataset = MotionDataset3D(args, args.subset_list, 'train')
-    test_dataset = MotionDataset3D(args, args.subset_list, 'test')
+    # test only on H36M-SH following this issue https://github.com/Walter0807/MotionBERT/issues/48
+    # test_dataset = MotionDataset3D(args, args.subset_list, 'test')
+    test_dataset = MotionDataset3D(args, ['H36M-SH'], 'test')
     train_loader_3d = DataLoader(train_dataset, **trainloader_params)
     test_loader = DataLoader(test_dataset, **testloader_params)
     
@@ -344,18 +365,35 @@ def train_with_config(args, opts):
                     lr,
                     losses['3d_pos'].avg,
                     e1, e2))
-                train_writer.add_scalar('Error P1', e1, epoch + 1)
-                train_writer.add_scalar('Error P2', e2, epoch + 1)
-                train_writer.add_scalar('loss_3d_pos', losses['3d_pos'].avg, epoch + 1)
-                train_writer.add_scalar('loss_2d_proj', losses['2d_proj'].avg, epoch + 1)
-                train_writer.add_scalar('loss_3d_scale', losses['3d_scale'].avg, epoch + 1)
-                train_writer.add_scalar('loss_3d_velocity', losses['3d_velocity'].avg, epoch + 1)
-                train_writer.add_scalar('loss_lv', losses['lv'].avg, epoch + 1)
-                train_writer.add_scalar('loss_lg', losses['lg'].avg, epoch + 1)
-                train_writer.add_scalar('loss_a', losses['angle'].avg, epoch + 1)
-                train_writer.add_scalar('loss_av', losses['angle_velocity'].avg, epoch + 1)
-                train_writer.add_scalar('loss_total', losses['total'].avg, epoch + 1)
                 
+                print('Error P1', e1)
+                print('Error P2', e2)
+                print('loss_3d_pos', losses['3d_pos'].avg)
+                print('loss_2d_proj', losses['2d_proj'].avg)
+                print('loss_3d_scale', losses['3d_scale'].avg)
+                print('loss_3d_velocity', losses['3d_velocity'].avg)
+                print('loss_lv', losses['lv'].avg)
+                print('loss_lg', losses['lg'].avg)
+                print('loss_a', losses['angle'].avg)
+                print('loss_av', losses['angle_velocity'].avg)
+                print('loss_total', losses['total'].avg)
+                
+                if wandb_run:
+                    wandb.log({
+                        'Error P1': e1,
+                        'Error P2': e2,
+                        'loss_3d_pos': losses['3d_pos'].avg,
+                        'loss_2d_proj': losses['2d_proj'].avg,
+                        'loss_3d_scale': losses['3d_scale'].avg,
+                        'loss_3d_velocity': losses['3d_velocity'].avg,
+                        'loss_lv': losses['lv'].avg,
+                        'loss_lg': losses['lg'].avg,
+                        'loss_a': losses['angle'].avg,
+                        'loss_av': losses['angle_velocity'].avg,
+                        'loss_total': losses['total'].avg,
+                    })
+                    print(f"Wandb logged metrics for epoch {epoch + 1}")
+                    
             # Decay learning rate exponentially
             lr *= lr_decay
             for param_group in optimizer.param_groups:
