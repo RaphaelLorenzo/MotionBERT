@@ -5,7 +5,7 @@ import sys
 import argparse
 import errno
 from collections import OrderedDict
-import tensorboardX
+# import tensorboardX
 from tqdm import tqdm
 import random
 
@@ -22,6 +22,9 @@ from lib.model.loss import *
 from lib.data.dataset_action import NTURGBD
 from lib.model.model_action import ActionNet
 
+import shutil
+from datetime import datetime
+
 random.seed(0)
 np.random.seed(0)
 torch.manual_seed(0)
@@ -35,6 +38,8 @@ def parse_args():
     parser.add_argument('-e', '--evaluate', default='', type=str, metavar='FILENAME', help='checkpoint to evaluate (file name)')
     parser.add_argument('-freq', '--print_freq', default=100)
     parser.add_argument('-ms', '--selection', default='latest_epoch.bin', type=str, metavar='FILENAME', help='checkpoint to finetune (file name)')
+    parser.add_argument('-wandb', '--use_wandb', action='store_true', help='use wandb for logging')
+    parser.add_argument('-nw', '--num_workers', default=-1, type=int, help='number of workers. -1 means use all available cores.')
     opts = parser.parse_args()
     return opts
 
@@ -46,7 +51,7 @@ def validate(test_loader, model, criterion):
     top5 = AverageMeter()
     with torch.no_grad():
         end = time.time()
-        for idx, (batch_input, batch_gt) in tqdm(enumerate(test_loader)):
+        for idx, (batch_input, batch_gt) in tqdm(enumerate(test_loader), total=len(test_loader), desc='Testing'):
             batch_size = len(batch_input)    
             if torch.cuda.is_available():
                 batch_gt = batch_gt.cuda()
@@ -82,7 +87,38 @@ def train_with_config(args, opts):
     except OSError as e:
         if e.errno != errno.EEXIST:
             raise RuntimeError('Unable to create checkpoint directory:', opts.checkpoint)
-    train_writer = tensorboardX.SummaryWriter(os.path.join(opts.checkpoint, "logs"))
+    # train_writer = tensorboardX.SummaryWriter(os.path.join(opts.checkpoint, "logs"))
+
+    ###
+    if opts.num_workers == -1:
+        import multiprocessing as mp
+        opts.num_workers = mp.cpu_count() - 1
+
+    # copy config file to checkpoint directory
+    current_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dst_config_file = os.path.join(opts.checkpoint, f"config_{current_timestamp}.yaml")
+    shutil.copy(opts.config, dst_config_file)
+    print(f"Copied config file to {dst_config_file}")
+
+    # Initialize wandb
+    if opts.use_wandb:
+        import wandb
+        # Generate run name if not provided
+        current_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        wandb_run_name = f"MotionBERT_action_{current_timestamp}"
+        project_name = "MotionBERT_action"
+        wandb_run = wandb.init(
+            project=project_name,
+            name=wandb_run_name,
+            config={
+                **args,
+            }
+        )
+        print(f"Wandb initialized !")
+    else:
+        wandb_run = None
+  
+    args.desired_return = "representation"
     model_backbone = load_backbone(args)
     if args.finetune:
         if opts.resume or opts.evaluate:
@@ -90,7 +126,7 @@ def train_with_config(args, opts):
         else:
             chk_filename = os.path.join(opts.pretrained, opts.selection)
             print('Loading backbone', chk_filename)
-            checkpoint = torch.load(chk_filename, map_location=lambda storage, loc: storage)['model_pos']
+            checkpoint = torch.load(chk_filename, map_location=lambda storage, loc: storage, weights_only=False)['model_pos']
             model_backbone = load_pretrained_weights(model_backbone, checkpoint)
     if args.partial_train:
         model_backbone = partial_train_layers(model_backbone, args.partial_train)
@@ -107,26 +143,31 @@ def train_with_config(args, opts):
     print('INFO: Trainable parameter count:', model_params)
     print('Loading dataset...')
     trainloader_params = {
-          'batch_size': args.batch_size,
-          'shuffle': True,
-          'num_workers': 8,
-          'pin_memory': True,
-          'prefetch_factor': 4,
-          'persistent_workers': True
+        'batch_size': args.batch_size,
+        'shuffle': True,
+        'num_workers': opts.num_workers//2,
+        'pin_memory': True,
+        'prefetch_factor': 4,
+        'persistent_workers': True
     }
     testloader_params = {
           'batch_size': args.batch_size,
           'shuffle': False,
-          'num_workers': 8,
+          'num_workers': opts.num_workers//2,
           'pin_memory': True,
           'prefetch_factor': 4,
           'persistent_workers': True
     }
     data_path = 'data/action/%s.pkl' % args.dataset
-    ntu60_xsub_train = NTURGBD(data_path=data_path, data_split=args.data_split+'_train', n_frames=args.clip_len, random_move=args.random_move, scale_range=args.scale_range_train)
+    
+    if not opts.evaluate:
+        ntu60_xsub_train = NTURGBD(data_path=data_path, data_split=args.data_split+'_train', n_frames=args.clip_len, random_move=args.random_move, scale_range=args.scale_range_train)
+        print("Loaded training data with length: ", len(ntu60_xsub_train))
     ntu60_xsub_val = NTURGBD(data_path=data_path, data_split=args.data_split+'_val', n_frames=args.clip_len, random_move=False, scale_range=args.scale_range_test)
-
-    train_loader = DataLoader(ntu60_xsub_train, **trainloader_params)
+    print("Loaded validation data with length: ", len(ntu60_xsub_val))
+    
+    if not opts.evaluate:
+        train_loader = DataLoader(ntu60_xsub_train, **trainloader_params)
     test_loader = DataLoader(ntu60_xsub_val, **testloader_params)
         
     chk_filename = os.path.join(opts.checkpoint, "latest_epoch.bin")
@@ -135,7 +176,7 @@ def train_with_config(args, opts):
     if opts.resume or opts.evaluate:
         chk_filename = opts.evaluate if opts.evaluate else opts.resume
         print('Loading checkpoint', chk_filename)
-        checkpoint = torch.load(chk_filename, map_location=lambda storage, loc: storage)
+        checkpoint = torch.load(chk_filename, map_location=lambda storage, loc: storage, weights_only=False)
         model.load_state_dict(checkpoint['model'], strict=True)
     
     if not opts.evaluate:
@@ -169,7 +210,7 @@ def train_with_config(args, opts):
             model.train()
             end = time.time()
             iters = len(train_loader)
-            for idx, (batch_input, batch_gt) in tqdm(enumerate(train_loader)):    # (N, 2, T, 17, 3)
+            for idx, (batch_input, batch_gt) in tqdm(enumerate(train_loader), total=iters, desc='Training'):    # (N, 2, T, 17, 3)
                 data_time.update(time.time() - end)
                 batch_size = len(batch_input)
                 if torch.cuda.is_available():
@@ -198,13 +239,23 @@ def train_with_config(args, opts):
                 
             test_loss, test_top1, test_top5 = validate(test_loader, model, criterion)
                 
-            train_writer.add_scalar('train_loss', losses_train.avg, epoch + 1)
-            train_writer.add_scalar('train_top1', top1.avg, epoch + 1)
-            train_writer.add_scalar('train_top5', top5.avg, epoch + 1)
-            train_writer.add_scalar('test_loss', test_loss, epoch + 1)
-            train_writer.add_scalar('test_top1', test_top1, epoch + 1)
-            train_writer.add_scalar('test_top5', test_top5, epoch + 1)
+            # train_writer.add_scalar('train_loss', losses_train.avg, epoch + 1)
+            # train_writer.add_scalar('train_top1', top1.avg, epoch + 1)
+            # train_writer.add_scalar('train_top5', top5.avg, epoch + 1)
+            # train_writer.add_scalar('test_loss', test_loss, epoch + 1)
+            # train_writer.add_scalar('test_top1', test_top1, epoch + 1)
+            # train_writer.add_scalar('test_top5', test_top5, epoch + 1)
             
+            if wandb_run is not None:
+                wandb_run.log({
+                    "train/epoch/loss": losses_train.avg,
+                    "train/epoch/top1": top1.avg,
+                    "train/epoch/top5": top5.avg,
+                    "test/epoch/loss": test_loss,
+                    "test/epoch/top1": test_top1,
+                    "test/epoch/top5": test_top5,
+                })
+                
             scheduler.step()
 
             # Save latest checkpoint.
