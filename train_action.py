@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 from lib.utils.tools import *
 from lib.utils.learning import *
 from lib.model.loss import *
-from lib.data.dataset_action import NTURGBD
+from lib.data.dataset_action import NTURGBD, ReprLabelDataset
 from lib.model.model_action import ActionNet, LinearNet
 
 import shutil
@@ -42,6 +42,23 @@ def parse_args():
     parser.add_argument('-nw', '--num_workers', default=-1, type=int, help='number of workers. -1 means use all available cores.')
     opts = parser.parse_args()
     return opts
+
+def precompute_linear_reprs(model, loader, device):
+    """Run frozen LinearNet backbone once per sample; returns CPU tensors (N, J*D), (N,)."""
+    net = model.module if isinstance(model, nn.DataParallel) else model
+    net.eval()
+    repr_chunks = []
+    label_chunks = []
+    with torch.no_grad():
+        for batch_input, batch_gt in tqdm(loader, desc='Precomputing repr', total=len(loader)):
+            batch_input = batch_input.to(device, non_blocking=True)
+            r = net(batch_input, ret_repr=True)
+            repr_chunks.append(r.cpu())
+            label_chunks.append(batch_gt.cpu() if torch.is_tensor(batch_gt) else torch.tensor(batch_gt))
+    repr_all = torch.cat(repr_chunks, dim=0)
+    labels_all = torch.cat(label_chunks, dim=0).long()
+    return repr_all, labels_all
+
 
 def validate(test_loader, model, criterion):
     model.eval()
@@ -131,14 +148,14 @@ def train_with_config(args, opts):
             model_backbone = load_pretrained_weights(model_backbone, checkpoint)
     
     if args.partial_train:
-        if args.partial_train == "lineareval":
-            # free everythin
+        if args.partial_train == "lineareval" or args.partial_train == "lineareval_shortcut":
+            # freeze everything
             for name, p in model_backbone.named_parameters():
                 p.requires_grad = False
         else:
             model_backbone = partial_train_layers(model_backbone, args.partial_train)
     
-    if args.partial_train == "lineareval":
+    if args.partial_train == "lineareval" or args.partial_train == "lineareval_shortcut":
         model = LinearNet(backbone=model_backbone, dim_rep=args.dim_rep, num_classes=args.action_classes, num_joints=args.num_joints)
     else:
         model = ActionNet(backbone=model_backbone, dim_rep=args.dim_rep, num_classes=args.action_classes, dropout_ratio=args.dropout_ratio, version=args.model_version, hidden_dim=args.hidden_dim, num_joints=args.num_joints)
@@ -175,17 +192,21 @@ def train_with_config(args, opts):
           'persistent_workers': True
     }
     data_path = 'data/action/%s.pkl' % args.dataset
-    
+    shortcut_mode = args.partial_train == 'lineareval_shortcut'
+
     if not opts.evaluate:
         ntu60_xsub_train = NTURGBD(data_path=data_path, data_split=args.data_split+'_train', n_frames=args.clip_len, random_move=args.random_move, scale_range=args.scale_range_train)
         print("Loaded training data with length: ", len(ntu60_xsub_train))
     ntu60_xsub_val = NTURGBD(data_path=data_path, data_split=args.data_split+'_val', n_frames=args.clip_len, random_move=False, scale_range=args.scale_range_test)
     print("Loaded validation data with length: ", len(ntu60_xsub_val))
-    
-    if not opts.evaluate:
-        train_loader = DataLoader(ntu60_xsub_train, **trainloader_params)
-    test_loader = DataLoader(ntu60_xsub_val, **testloader_params)
-        
+
+    train_loader = None
+    test_loader = None
+    if not shortcut_mode:
+        if not opts.evaluate:
+            train_loader = DataLoader(ntu60_xsub_train, **trainloader_params)
+        test_loader = DataLoader(ntu60_xsub_val, **testloader_params)
+
     chk_filename = os.path.join(opts.checkpoint, "latest_epoch.bin")
     if os.path.exists(chk_filename):
         opts.resume = chk_filename
@@ -194,7 +215,27 @@ def train_with_config(args, opts):
         print('Loading checkpoint', chk_filename)
         checkpoint = torch.load(chk_filename, map_location=lambda storage, loc: storage, weights_only=False)
         model.load_state_dict(checkpoint['model'], strict=True)
-    
+
+    if shortcut_mode:
+        device = next(model.parameters()).device
+        precompute_loader_kw = {
+            'batch_size': args.batch_size,
+            'shuffle': False,
+            'num_workers': opts.num_workers // 2,
+            'pin_memory': True,
+            'prefetch_factor': 4,
+            'persistent_workers': True,
+        }
+        if not opts.evaluate:
+            train_pre_loader = DataLoader(ntu60_xsub_train, **precompute_loader_kw)
+            train_repr, train_labels = precompute_linear_reprs(model, train_pre_loader, device)
+            train_loader = DataLoader(ReprLabelDataset(train_repr, train_labels), **trainloader_params)
+            print('lineareval_shortcut: cached train repr shape', tuple(train_repr.shape))
+        val_pre_loader = DataLoader(ntu60_xsub_val, **precompute_loader_kw)
+        val_repr, val_labels = precompute_linear_reprs(model, val_pre_loader, device)
+        test_loader = DataLoader(ReprLabelDataset(val_repr, val_labels), **testloader_params)
+        print('lineareval_shortcut: cached val repr shape', tuple(val_repr.shape))
+
     if not opts.evaluate:
         optimizer = optim.AdamW(
             [     {"params": filter(lambda p: p.requires_grad, model.module.backbone.parameters()), "lr": args.lr_backbone},

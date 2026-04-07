@@ -76,11 +76,14 @@ class LinearNet(nn.Module):
         self.backbone = backbone
         self.feat_J = num_joints
         self.head = nn.Linear(dim_rep*num_joints, num_classes)
-        
-    def forward(self, x):
+    def forward(self, x, ret_repr=False):
         '''
-            Input: (N, M x T x 17 x 3) 
+            Input: (N, M x T x 17 x 3) for full forward, or (N, J*D) when passing
+            precomputed embeddings (DataParallel-safe; same as shortcut_repr).
         '''
+        if x.dim() == 2 and x.shape[1] == self.head.in_features:
+            return self.head(x)
+
         N, M, T, J, C = x.shape
         x = x.reshape(N*M, T, J, C)        
         feat = self.backbone.get_representation(x)
@@ -91,6 +94,9 @@ class LinearNet(nn.Module):
         # average over views
         feat = feat.mean(dim=1) # N, J, C
         feat = feat.reshape(N, -1) # N, J*D
+        
+        if ret_repr:
+            return feat
         
         out = self.head(feat)
         

@@ -166,6 +166,26 @@ class ActionDataset(Dataset):
     def __getitem__(self, index):
         raise NotImplementedError 
 
+class ReprLabelDataset(Dataset):
+    """Precomputed backbone embeddings and labels for linear probe / cached training."""
+
+    def __init__(self, repr_tensor, labels_tensor):
+        assert len(repr_tensor) == len(labels_tensor)
+        self.repr = repr_tensor
+        self.labels = labels_tensor
+
+    def __len__(self):
+        return len(self.repr)
+
+    def __getitem__(self, idx):
+        y = self.labels[idx]
+        if torch.is_tensor(y):
+            y = int(y.item())
+        else:
+            y = int(y)
+        return self.repr[idx], y
+
+
 class NTURGBD(ActionDataset):
     def __init__(self, data_path, data_split, n_frames=243, random_move=True, scale_range=[1,1]):
         super(NTURGBD, self).__init__(data_path, data_split, n_frames, random_move, scale_range)
