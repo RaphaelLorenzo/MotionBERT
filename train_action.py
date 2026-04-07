@@ -93,6 +93,7 @@ def train_with_config(args, opts):
     if opts.num_workers == -1:
         import multiprocessing as mp
         opts.num_workers = mp.cpu_count() - 1
+        print(f"Using {opts.num_workers} workers")
 
     # copy config file to checkpoint directory
     current_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -149,9 +150,13 @@ def train_with_config(args, opts):
         criterion = criterion.cuda() 
     best_acc = 0
     model_params = 0
+    trainable_params = 0
     for parameter in model.parameters():
         model_params = model_params + parameter.numel()
-    print('INFO: Trainable parameter count:', model_params)
+        if parameter.requires_grad:
+            trainable_params = trainable_params + parameter.numel()
+    print('INFO: Total parameter count:', model_params)
+    print('INFO: Trainable parameter count:', trainable_params)
     print('Loading dataset...')
     trainloader_params = {
         'batch_size': args.batch_size,
