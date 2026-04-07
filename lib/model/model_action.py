@@ -84,13 +84,13 @@ class LinearNet(nn.Module):
         N, M, T, J, C = x.shape
         x = x.reshape(N*M, T, J, C)        
         feat = self.backbone.get_representation(x)
-        feat = feat.reshape([N, M, T, self.feat_J, -1])      # (N, M, T, J, C)
+        feat = feat.reshape([N, M, T, self.feat_J, -1])      # (N, M, T, J, D)
         
         # average over time
         feat = feat.mean(dim=2) # N, M, J, C
         # average over views
         feat = feat.mean(dim=1) # N, J, C
-        feat = feat.reshape(N, J*C) # N, J*C
+        feat = feat.reshape(N, -1) # N, J*D
         
         out = self.head(feat)
         
