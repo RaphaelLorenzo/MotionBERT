@@ -69,3 +69,29 @@ class ActionNet(nn.Module):
         feat = feat.reshape([N, M, T, self.feat_J, -1])      # (N, M, T, J, C)
         out = self.head(feat)
         return out
+    
+class LinearNet(nn.Module):
+    def __init__(self, backbone, dim_rep=512, num_classes=60, num_joints=17):
+        super(LinearNet, self).__init__()
+        self.backbone = backbone
+        self.feat_J = num_joints
+        self.head = nn.Linear(dim_rep*num_joints, num_classes)
+        
+    def forward(self, x):
+        '''
+            Input: (N, M x T x 17 x 3) 
+        '''
+        N, M, T, J, C = x.shape
+        x = x.reshape(N*M, T, J, C)        
+        feat = self.backbone.get_representation(x)
+        feat = feat.reshape([N, M, T, self.feat_J, -1])      # (N, M, T, J, C)
+        
+        # average over time
+        feat = feat.mean(dim=2) # N, M, J, C
+        # average over views
+        feat = feat.mean(dim=1) # N, J, C
+        feat = feat.reshape(N, J*C) # N, J*C
+        
+        out = self.head(feat)
+        
+        return out
