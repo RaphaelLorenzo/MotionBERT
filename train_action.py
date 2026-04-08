@@ -150,7 +150,7 @@ def train_with_config(args, opts):
                 model_backbone = load_pretrained_weights(model_backbone, checkpoint)
             elif "model" in checkpoint.keys():
                 checkpoint = checkpoint['model']
-                model_backbone = load_pretrained_weights(model_backbone, checkpoint)
+                model_backbone = load_pretrained_weights(model_backbone, checkpoint, strip_backbone_prefix=True)
             else:
                 raise ValueError(f"Checkpoint does not contain 'model_pos' or 'model' key: {checkpoint.keys()}")
     
