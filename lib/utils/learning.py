@@ -64,6 +64,7 @@ def load_pretrained_weights(model, checkpoint):
     model_dict.update(new_state_dict)
     model.load_state_dict(model_dict, strict=True)
     print('load_weight', len(matched_layers))
+    print('discarded_layers', discarded_layers)
     return model
 
 def partial_train_layers(model, partial_list):

@@ -144,8 +144,15 @@ def train_with_config(args, opts):
         else:
             chk_filename = os.path.join(opts.pretrained, opts.selection)
             print('Loading backbone', chk_filename)
-            checkpoint = torch.load(chk_filename, map_location=lambda storage, loc: storage, weights_only=False)['model_pos']
-            model_backbone = load_pretrained_weights(model_backbone, checkpoint)
+            checkpoint = torch.load(chk_filename, map_location=lambda storage, loc: storage, weights_only=False)
+            if "model_pos" in checkpoint.keys():
+                checkpoint = checkpoint['model_pos']
+                model_backbone = load_pretrained_weights(model_backbone, checkpoint)
+            elif "model" in checkpoint.keys():
+                checkpoint = checkpoint['model']
+                model_backbone = load_pretrained_weights(model_backbone, checkpoint)
+            else:
+                raise ValueError(f"Checkpoint does not contain 'model_pos' or 'model' key: {checkpoint.keys()}")
     
     if args.partial_train:
         if args.partial_train == "lineareval" or args.partial_train == "lineareval_shortcut":
