@@ -36,7 +36,7 @@ def accuracy(output, target, topk=(1,)):
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
 
-def load_pretrained_weights(model, checkpoint):
+def load_pretrained_weights(model, checkpoint, strip_backbone_prefix=False):
     """Load pretrianed weights to model
     Incompatible layers (unmatched in name or size) will be ignored
     Args:
@@ -56,6 +56,10 @@ def load_pretrained_weights(model, checkpoint):
         # keys would contain "module.", which should be ignored.
         if k.startswith('module.'):
             k = k[7:]
+        
+        if strip_backbone_prefix:
+            k = k.replace('backbone.', '')
+        
         if k in model_dict and model_dict[k].size() == v.size():
             new_state_dict[k] = v
             matched_layers.append(k)
@@ -65,6 +69,7 @@ def load_pretrained_weights(model, checkpoint):
     model.load_state_dict(model_dict, strict=True)
     print('load_weight', len(matched_layers))
     print('discarded_layers', discarded_layers)
+    assert("head" in layername for layername in discarded_layers), "only head layers can be discarded"
     return model
 
 def partial_train_layers(model, partial_list):
