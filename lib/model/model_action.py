@@ -75,8 +75,8 @@ class LinearNet(nn.Module):
         super(LinearNet, self).__init__()
         self.backbone = backbone
         self.feat_J = num_joints
-        # self.head = nn.Linear(dim_rep*num_joints, num_classes)
-        self.head = nn.Linear(dim_rep, num_classes) # try with joint max pooling
+        self.head = nn.Linear(dim_rep*num_joints, num_classes)
+        # self.head = nn.Linear(dim_rep, num_classes) # try with joint max pooling -> not good (-0.15 acc)
         
     def forward(self, x, ret_repr=False):
         '''
@@ -96,8 +96,8 @@ class LinearNet(nn.Module):
         # average over views
         feat = feat.mean(dim=1) # N, J, C
         
-        # feat = feat.reshape(N, -1) # N, J*D
-        feat = feat.amax(dim=1) # N, C try with joint max pooling
+        feat = feat.reshape(N, -1) # N, J*D
+        # feat = feat.amax(dim=1) # N, C try it with joint max pooling -> not good (-0.15 acc)
         
         if ret_repr:
             return feat
